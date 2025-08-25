@@ -1,0 +1,36 @@
+# Node.js
+node_modules/
+npm-debug.log
+yarn-error.log
+yarn-debug.log
+.pnpm-debug.log
+
+# Dependencias de Playwright
+playwright/.cache/
+
+# Auto-generados por Playwright
+test-results/
+playwright-report/
+trace.zip
+
+# Estado de autenticación
+storageState.json
+
+# Variables de entorno
+.env
+.env.local
+.env.development
+.env.production
+
+# IDE y editores
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+Thumbs.db
+
+# Build outputs TypeScript
+dist/
+build/
+out/

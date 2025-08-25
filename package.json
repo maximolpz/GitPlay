@@ -1,0 +1,16 @@
+{
+  "dependencies": {
+    "init": "^0.1.2",
+    "playwright": "^1.54.2"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.54.2",
+    "@types/node": "^24.3.0"
+  },
+  "scripts": {
+    "test": "npx playwright test",
+    "test:setup": "npx playwright test --project=setup",
+    "test:ui": "npx playwright test --project=tests",
+    "report": "npx playwright show-report"
+  }
+}
