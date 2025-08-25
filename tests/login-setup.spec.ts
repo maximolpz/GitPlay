@@ -1,6 +1,8 @@
 import { test } from '@playwright/test';
 import { LoginPage } from '../pages/LoginPage';
 
+require('dotenv').config();
+
 test('User can login', async ({ page }) => {
   
   const email = process.env.USER_EMAIL;
