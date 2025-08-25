@@ -5,16 +5,17 @@ yarn-error.log
 yarn-debug.log
 .pnpm-debug.log
 
-# Dependencias de Playwright
-playwright/.cache/
-
-# Auto-generados por Playwright
+# Archivos generados por Playwright
 test-results/
 playwright-report/
 trace.zip
+videos/
 
-# Estado de autenticación
-storageState.json
+# Datos temporales o cache
+data/*.json
+!data/.gitkeep
+# Explicación: ignoramos los .json en /data, pero mantenemos la carpeta
+# (opcional: si querés guardar el historial, no ignores data/*.json)
 
 # Variables de entorno
 .env
@@ -24,13 +25,20 @@ storageState.json
 
 # IDE y editores
 .DS_Store
-.idea/
-.vscode/
+Thumbs.db
 *.swp
 *~
-Thumbs.db
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
 
-# Build outputs TypeScript
+# Build outputs (si usas TypeScript)
 dist/
 build/
 out/
+coverage/
+
+# Sistema
+.Spotlight-V100
+.Suspects
