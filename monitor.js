@@ -1,137 +1,220 @@
 // monitor.js
-const { getOctokit } = require('@actions/github');
-const { getInput } = require('@actions/core');
-const { chromium } = require('playwright');
 const fs = require('fs');
+const { chromium } = require('playwright');
 
-// Configuración
-const octokit = getOctokit(process.env.GITHUB_TOKEN);
-const owner = 'maximolpz';
-const repo = 'LowPriceMonitor';
-const dataFile = 'data/tracked-products.json';
+// === Verificar dependencias críticas ===
+let octokit;
+let core;
 
-// Leer historial de precios
-let tracked = {};
-if (fs.existsSync(dataFile)) {
-  tracked = JSON.parse(fs.readFileSync(dataFile, 'utf-8'));
+try {
+  const { getOctokit } = require('@actions/github');
+  const { getInput } = require('@actions/core');
+  core = getInput;
+  octokit = getOctokit(process.env.GITHUB_TOKEN);
+
+  if (!octokit) {
+    console.error('❌ Error: octokit no se pudo inicializar. ¿Está @actions/github instalado?');
+  } else {
+    console.log('✅ octokit inicializado correctamente');
+  }
+} catch (error) {
+  console.error('❌ Error al cargar @actions/github o @actions/core:', error.message);
 }
 
-// Extraer URL del cuerpo del issue
+// === Configuración ===
+const owner = 'maximolpz';           // ← Cambia si tu usuario es distinto
+const repo = 'LowPriceMonitor';      // ← Nombre de tu repositorio
+const dataFile = 'data/tracked-products.json';
+
+// === Leer historial de precios ===
+let tracked = {};
+if (fs.existsSync(dataFile)) {
+  const content = fs.readFileSync(dataFile, 'utf-8').trim();
+  if (content) {
+    try {
+      tracked = JSON.parse(content);
+      console.log('✅ Historial de precios cargado:', Object.keys(tracked).length, 'productos');
+    } catch (error) {
+      console.error('❌ Error al parsear tracked-products.json:', error.message);
+      tracked = {};
+    }
+  } else {
+    console.log('⚠️  tracked-products.json está vacío. Iniciando con historial vacío.');
+  }
+} else {
+  console.log('⚠️  No existe tracked-products.json. Se creará al primer monitoreo.');
+}
+
+// === Extraer URL del cuerpo del issue ===
 async function extractUrlFromIssue(body) {
   const urlMatch = body.match(/https?:\/\/[^\s"']+/);
   return urlMatch ? urlMatch[0] : null;
 }
 
-// Obtener precio según plataforma
+// === Obtener precio según plataforma ===
 async function getPrice(url) {
-  const browser = await chromium.launch();
-  const page = await browser.newPage();
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext({
+    viewport: { width: 1920, height: 1080 },
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+  });
+  const page = await context.newPage();
 
   try {
-    await page.goto(url, { timeout: 30000 });
+    console.log(`🔍 Navegando a: ${url}`);
+    await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+
+    // Esperar un poco más para contenido dinámico
+    await page.waitForTimeout(2000);
 
     let price = null;
 
+    // === Steam ===
     if (url.includes('steampowered.com')) {
-      const priceText = await page.locator('.discount_final_price').first().textContent();
-      price = parseFloat(priceText.replace(/[^0-9.]/g, ''));
+      const selectors = [
+        '.discount_final_price',   // Precio con descuento
+        '.game_purchase_price',    // Precio sin descuento
+        '.price'                   // Clase genérica
+      ];
+
+      for (const selector of selectors) {
+        const element = await page.locator(selector).first().textContent();
+        if (element) {
+          const clean = element.replace(/[^\d.,]/g, '').replace(',', '.');
+          price = parseFloat(clean);
+          if (!isNaN(price)) break;
+        }
+      }
     }
 
+    // === MercadoLibre ===
     if (url.includes('mercadolibre.com')) {
       const fraction = await page.locator('span.andes-money-amount__fraction').first().textContent();
-      const cents = await page.locator('span.andes-money-amount__cents').first().textContent() || '00';
-      price = parseFloat(`${fraction}.${cents}`);
+      if (fraction) {
+        const cents = await page.locator('span.andes-money-amount__cents').first().textContent() || '00';
+        price = parseFloat(`${fraction}.${cents}`);
+      }
     }
 
     await browser.close();
+
+    if (!price || isNaN(price)) {
+      throw new Error('No se pudo extraer un precio válido');
+    }
+
+    console.log(`✅ Precio obtenido: $${price}`);
     return price;
   } catch (error) {
     await browser.close();
-    throw new Error(`Error al obtener precio: ${error.message}`);
+    console.error(`❌ Error al obtener precio de ${url}:`, error.message);
+    throw error;
   }
 }
 
-// Función principal
+// === Función principal ===
 async function run() {
-  const payload = require(process.env.GITHUB_EVENT_PATH);
-  const event = process.env.GITHUB_EVENT_NAME;
-
   try {
-    // Si es un issue nuevo, agregarlo al seguimiento
-    if (event === 'issues' && payload.action === 'opened') {
-      if (!payload.issue) {
-        console.error('Error: payload.issue es undefined');
-        return;
-      }
-      const url = await extractUrlFromIssue(payload.issue.body);
-      if (!url) {
-        await octokit.issues.createComment({
-          owner, repo,
-          issue_number: payload.issue.number,
-          body: '❌ No se encontró un enlace válido en el issue. Por favor, agrega una URL de Steam o MercadoLibre.'
-        });
-        return;
-      }
-
-      const currentPrice = await getPrice(url);
-      if (!currentPrice) {
-        await octokit.issues.createComment({
-          owner, repo,
-          issue_number: payload.issue.number,
-          body: '❌ No se pudo obtener el precio del producto. Revisa que la URL sea correcta.'
-        });
-        return;
-      }
-
-      // Guardar en historial
-      tracked[url] = {
-        issueNumber: payload.issue.number,
-        initialPrice: currentPrice,
-        lastChecked: new Date().toISOString()
-      };
-
-      fs.writeFileSync(dataFile, JSON.stringify(tracked, null, 2));
-
-      await octokit.issues.createComment({
-        owner, repo,
-        issue_number: payload.issue.number,
-        body: `✅ Producto agregado al monitoreo.\n\n🔗 ${url}\n💰 Precio inicial: $${currentPrice}\n🔄 Se verificará cada 6 horas.`
-      });
+    // Cargar evento de GitHub
+    const payloadPath = process.env.GITHUB_EVENT_PATH;
+    if (!payloadPath) {
+      console.error('❌ GITHUB_EVENT_PATH no definido');
+      return;
     }
 
-    // Si es ejecución programada, verifica todos los productos
+    const payload = require(payloadPath);
+    const event = process.env.GITHUB_EVENT_NAME;
+
+    if (!octokit) {
+      console.error('❌ octokit no está disponible. No se puede continuar.');
+      return;
+    }
+
+    // === Caso 1: Nuevo issue ===
+    if (event === 'issues' && payload.action === 'opened') {
+      const issueNumber = payload.issue.number;
+      const body = payload.issue.body;
+      const url = await extractUrlFromIssue(body);
+
+      if (!url) {
+        console.log(`❌ No se encontró URL en el issue #${issueNumber}`);
+        await octokit.issues.createComment({
+          owner,
+          repo,
+          issue_number: issueNumber,
+          body: '❌ No se encontró un enlace válido. Por favor, agrega una URL de Steam o MercadoLibre.'
+        });
+        return;
+      }
+
+      try {
+        const currentPrice = await getPrice(url);
+
+        // Guardar en historial
+        tracked[url] = {
+          issueNumber,
+          initialPrice: currentPrice,
+          lastChecked: new Date().toISOString()
+        };
+
+        fs.writeFileSync(dataFile, JSON.stringify(tracked, null, 2));
+
+        await octokit.issues.createComment({
+          owner,
+          repo,
+          issue_number: issueNumber,
+          body: `✅ Producto agregado al monitoreo.\n\n🔗 ${url}\n💰 Precio inicial: $${currentPrice}\n🔄 Se verificará cada 6 horas.`
+        });
+
+        console.log(`✅ Issue #${issueNumber} procesado. Precio inicial: $${currentPrice}`);
+      } catch (error) {
+        await octokit.issues.createComment({
+          owner,
+          repo,
+          issue_number: issueNumber,
+          body: `❌ No se pudo obtener el precio del producto. Revisa que la URL sea correcta o que el producto esté disponible.\n\n> ${error.message}`
+        });
+      }
+    }
+
+    // === Caso 2: Ejecución programada (cada 6h) ===
     if (event === 'schedule') {
+      console.log(`📅 Iniciando verificación programada. Productos a monitorear: ${Object.keys(tracked).length}`);
+
       for (const [url, data] of Object.entries(tracked)) {
         try {
           const currentPrice = await getPrice(url);
           const { initialPrice, issueNumber } = data;
 
           if (currentPrice < initialPrice) {
+            console.log(`🎉 ¡Precio bajó! De $${initialPrice} a $${currentPrice} en ${url}`);
+
             await octokit.issues.createComment({
-              owner, repo,
+              owner,
+              repo,
               issue_number: issueNumber,
-              body: `🎉 ¡PRECIO BAJÓ!\n\nAntes: $${initialPrice}\nAhora: $${currentPrice}\n\n${url}`
+              body: `🎉 ¡PRECIO BAJÓ!\n\n📉 Antes: $${initialPrice}\n💰 Ahora: $${currentPrice}\n🔗 ${url}`
             });
 
             // Actualizar precio inicial
             tracked[url].initialPrice = currentPrice;
           } else {
-            console.log(`Precio sin cambios: $${currentPrice} (mínimo: $${initialPrice})`);
+            console.log(`➡️ Precio sin cambios: $${currentPrice} (mínimo: $${initialPrice})`);
           }
         } catch (error) {
-          console.error(`Error checking ${url}:`, error.message);
-          // Opcional: comentar en el issue si falla
+          console.error(`❌ Error verificando ${url}:`, error.message);
         }
       }
 
-      // Guardar cambios
+      // Guardar cambios (por si hubo bajadas de precio)
       fs.writeFileSync(dataFile, JSON.stringify(tracked, null, 2));
+      console.log('✅ Historial actualizado');
     }
   } catch (error) {
-    console.error('Error general:', error);
-    // Opcional: notificar error
+    console.error('❌ Error general en run():', error.message);
   }
 }
 
-// Ejecutar
-run();
+// === Ejecutar ===
+run().catch(err => {
+  console.error('❌ Error no manejado:', err);
+});
