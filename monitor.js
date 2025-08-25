@@ -59,6 +59,10 @@ async function run() {
   try {
     // Si es un issue nuevo, agregarlo al seguimiento
     if (event === 'issues' && payload.action === 'opened') {
+      if (!payload.issue) {
+        console.error('Error: payload.issue es undefined');
+        return;
+      }
       const url = await extractUrlFromIssue(payload.issue.body);
       if (!url) {
         await octokit.issues.createComment({
